@@ -4,10 +4,16 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
+
+func ceil_div(x, y int) int {
+	return int(math.Ceil(float64(x) / float64(y)))
+}
 
 type Mode int
 
@@ -35,36 +41,48 @@ func left_pad(_s fmt.Stringer) (res string) {
 	return
 }
 
-func (self TreeNode) String() string {
+func (node TreeNode) String() string {
 	children := ""
-	if self.left != nil {
-		children = fmt.Sprintf("%s%s", left_pad(self.left), left_pad(self.right))
+	if node.left != nil {
+		children = fmt.Sprintf("%s%s", left_pad(node.left), left_pad(node.right))
 	}
-	return fmt.Sprintf("%c(freq %d)%s", self.value, self.freq, children)
+	return fmt.Sprintf("%c(freq %d)%s", node.value, node.freq, children)
 }
 
 type BitSeq struct {
 	length int
+	data   [8]byte
+}
+
+type InfBitSeq struct {
+	length int
 	data   []byte
 }
 
-func (self BitSeq) add_bit(bit bool) (res BitSeq) {
-	res.data = append([]byte{}, self.data...)
-	if (self.length % 8) == 0 {
-		res.data = append(res.data, 0)
-	}
-
+func (bs BitSeq) add_bit(bit bool) (res BitSeq) {
+	copy(res.data[:], bs.data[:])
 	if bit {
-		res.data[len(res.data)-1] |= (1 << (self.length % 8))
+		res.data[bs.length/8] |= (1 << (bs.length % 8))
 	}
 
-	res.length = self.length + 1
+	res.length = bs.length + 1
 	return
 }
 
-func (self *BitSeq) concat(other BitSeq) (res BitSeq) {
+func (bs *InfBitSeq) add_bit(bit bool) {
+	if bs.length%8 == 0 {
+		bs.data = append(bs.data, 0)
+	}
+
+	if bit {
+		bs.data[bs.length/8] |= (1 << (bs.length % 8))
+	}
+	bs.length += 1
+}
+
+func (bs *InfBitSeq) concat(other BitSeq) (res InfBitSeq) {
 	for i := 0; i < other.length; i++ {
-		*self = self.add_bit((other.data[i/8] & (1 << (i % 8))) != 0)
+		bs.add_bit((other.data[i/8] & (1 << (i % 8))) != 0)
 	}
 	return
 }
@@ -181,7 +199,7 @@ func make_map(node TreeNode, path BitSeq, encoding_map *map[byte]BitSeq) {
 // 	}
 // }
 
-func generate_content(bits BitSeq) (res []byte) {
+func generate_content(bits InfBitSeq) (res []byte) {
 	res = append(res, 0, 0, 0, 0)
 	binary.LittleEndian.PutUint32(res, uint32(bits.length))
 	res = append(res, bits.data...)
@@ -192,18 +210,20 @@ func generate_map(m map[byte]BitSeq) (res []byte) {
 	for k, v := range m {
 		res = append(res, 0, 0, 0, 0)
 		binary.LittleEndian.PutUint32(res[len(res)-4:], uint32(v.length))
-		res = append(res, v.data...)
+		res = append(res, v.data[:ceil_div(v.length, 8)]...)
 		res = append(res, k)
+		// fmt.Println(res, v.length)
 	}
+	res = append(res, 0, 0, 0, 0)
 	return
 }
 
 func encode(config Config, input []byte) {
 	encoding_map := make(map[byte]BitSeq)
-	make_map(make_tree(make_queue(get_freqs(input))),
-		BitSeq{}, &encoding_map)
+	tree := make_tree(make_queue(get_freqs(input)))
+	make_map(tree, BitSeq{}, &encoding_map)
 
-	res_content := BitSeq{}
+	res_content := InfBitSeq{}
 	for _, char := range input {
 		res_content.concat(encoding_map[char])
 	}
@@ -216,7 +236,7 @@ func encode(config Config, input []byte) {
 	// Tree debug
 	// os.WriteFile("graph.dot",
 	// 	[]byte(fmt.Sprintf("digraph Tree {\n%s\n}", generate_dot(&tree))),
-	// 	fs.FileMode(os.O_RDWR))
+	// 	fs.FileMode(os.ModePerm))
 
 	// Map debug
 	// for k, v := range encoding_map {
@@ -225,6 +245,63 @@ func encode(config Config, input []byte) {
 
 	// Result debug
 	// fmt.Printf("%d %08b\n", res_content.length, res_content.data)
+}
+
+func parse_map_elem(input []byte, cursor *int, m map[BitSeq]byte) (end bool) {
+	key := BitSeq{length: int(binary.LittleEndian.Uint32(input[*cursor : *cursor+4]))}
+	*cursor += 4
+	if key.length == 0 {
+		end = true
+		return
+	}
+	copy(key.data[:], input[*cursor:*cursor+ceil_div(key.length, 8)])
+
+	*cursor += ceil_div(key.length, 8)
+	m[key] = input[*cursor]
+	*cursor += 1
+	return
+}
+
+func decode_bits(encoding_map map[BitSeq]byte, length int, data []byte) (res []byte) {
+	var acc BitSeq
+	for index, i := range data {
+		end_bit := 8
+		if index == len(data)-1 {
+			end_bit = ((length - 1) % 8) + 1
+		}
+		for offset := 0; offset < end_bit; offset++ {
+			acc = acc.add_bit(i&(1<<offset) != 0)
+			char, ok := encoding_map[acc]
+			if ok {
+				acc = BitSeq{}
+				res = append(res, char)
+			}
+		}
+	}
+	return
+}
+
+func decode(config Config, input []byte) {
+	cursor := 0
+	encoding_map := make(map[BitSeq]byte)
+	for !parse_map_elem(input, &cursor, encoding_map) {
+	}
+
+	length := int(binary.LittleEndian.Uint32(input[cursor:]))
+	cursor += 4
+	data := input[cursor : cursor+ceil_div(length, 8)]
+
+	content := decode_bits(encoding_map, length, data)
+	filename := strings.TrimSuffix(config.filename, filepath.Ext(config.filename))
+	if len(filename) == len(config.filename) {
+		filename += "1"
+	}
+
+	err := os.WriteFile(filename, content, fs.FileMode(os.ModePerm))
+	if err != nil {
+		fmt.Println("Failed to write to file\n Traceback:")
+		panic(err)
+	}
 }
 
 func main() {
@@ -238,6 +315,6 @@ func main() {
 	if config.mode == ENCODE_MODE {
 		encode(config, input)
 	} else {
-		panic("UNIMPLEMENTED")
+		decode(config, input)
 	}
 }
