@@ -24,6 +24,7 @@ const (
 
 type Config struct {
 	filename string
+	output   string
 	mode     Mode
 }
 
@@ -94,15 +95,6 @@ func usage() {
 	os.Exit(1)
 }
 
-func contains[T comparable](elems []T, v T) bool {
-	for _, s := range elems {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
 func parse_args() (config Config) {
 	args := os.Args[1:]
 	if len(args) < 1 {
@@ -111,9 +103,27 @@ func parse_args() (config Config) {
 	}
 
 	config.filename = args[0]
-
-	is_encode := contains(args, "-e")
-	is_decode := contains(args, "-d")
+	args = args[1:]
+	var is_encode, is_decode, is_output bool
+	for _, arg := range args {
+		if is_output {
+			config.output = arg
+			is_output = false
+		}
+		if arg == "-o" {
+			if config.output != "" {
+				fmt.Println("Argument -o provided multiple times.")
+				usage()
+			}
+			is_output = true
+		}
+		if arg == "-e" {
+			is_encode = true
+		}
+		if arg == "-d" {
+			is_decode = true
+		}
+	}
 	if !((is_encode || is_decode) && !(is_encode && is_decode)) { // NOT XOR
 		fmt.Println("Can't provide -d and -e at the same time.")
 		usage()
@@ -228,7 +238,13 @@ func encode(config Config, input []byte) {
 		res_content.concat(encoding_map[char])
 	}
 	content := append(generate_map(encoding_map), generate_content(res_content)...)
-	err := os.WriteFile(fmt.Sprintf("%s.gprs", config.filename), content, fs.FileMode(os.ModePerm))
+	var filename string
+	if config.output == "" {
+		filename = config.filename + ".gprs"
+	} else {
+		filename = config.output
+	}
+	err := os.WriteFile(filename, content, fs.FileMode(os.ModePerm))
 	if err != nil {
 		fmt.Println("Failed to write to file\n Traceback:")
 		panic(err)
@@ -292,7 +308,12 @@ func decode(config Config, input []byte) {
 	data := input[cursor : cursor+ceil_div(length, 8)]
 
 	content := decode_bits(encoding_map, length, data)
-	filename := strings.TrimSuffix(config.filename, filepath.Ext(config.filename))
+	var filename string
+	if config.output == "" {
+		filename = strings.TrimSuffix(config.filename, filepath.Ext(config.filename))
+	} else {
+		filename = config.output
+	}
 	if len(filename) == len(config.filename) {
 		filename += "1"
 	}
