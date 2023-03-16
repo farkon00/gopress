@@ -8,9 +8,11 @@ import (
 )
 
 func usage() {
-	fmt.Println("Usage: gopress <input-file> (-d/-e)")
+	fmt.Println("Usage: gopress <input-file> (-d/-e) [flags]")
 	fmt.Println("-e - encode mode")
 	fmt.Println("-d - decode mode")
+	fmt.Println("-o - output file")
+	fmt.Println("-h/--help - show this message")
 	os.Exit(1)
 }
 
@@ -22,12 +24,19 @@ func parse_args() (config shared.Config) {
 	}
 
 	config.Filename = args[0]
+	if config.Filename == "-h" || config.Filename == "--help" {
+		usage()
+	}
+
 	args = args[1:]
 	var is_encode, is_decode, is_output bool
 	for _, arg := range args {
 		if is_output {
 			config.Output = arg
 			is_output = false
+		}
+		if arg == "--help" || arg == "-h" {
+			usage()
 		}
 		if arg == "-o" {
 			if config.Output != "" {
@@ -44,7 +53,7 @@ func parse_args() (config shared.Config) {
 		}
 	}
 	if !((is_encode || is_decode) && !(is_encode && is_decode)) { // NOT XOR
-		fmt.Println("Can't provide -d and -e at the same time.")
+		fmt.Println("You must provide either -d or -e.")
 		usage()
 	}
 	if is_encode {
