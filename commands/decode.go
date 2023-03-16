@@ -61,7 +61,7 @@ func Decode(config shared.Config, input []byte) {
 	} else {
 		filename = config.Output
 	}
-	if len(filename) == len(config.Filename) {
+	if filename == config.Filename {
 		filename += "1"
 	}
 
